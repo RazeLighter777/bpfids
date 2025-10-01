@@ -12,9 +12,7 @@
       pkgs = import nixpkgs { inherit system; };
     in
     {
-      packages.default = pkgs.callPackage ./default.nix { };
-      defaultPackage = self.packages.default;
-      devShells.default = pkgs.mkShell {
+      devShells.x86_64-linux.default = pkgs.mkShell {
         buildInputs = with pkgs; [
           llvmPackages_21.clangUseLLVM
         ];
