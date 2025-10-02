@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::net::{IpAddr, Ipv4Addr};
 mod ids;
+mod bpfmap;
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
     Apply,
@@ -11,6 +12,10 @@ enum Commands {
     DebugBuild,
     Build,
     PrintTestRuleSerialization,
+    GetRuleStats {
+        map_path: String,   // path to pinned bpf map
+        rule_ids: Vec<u32>, // if empty, get all
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -93,6 +98,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let serialized = serde_json::to_string(&test_rule).unwrap();
             println!("Serialized test rule:\n{}", serialized);
+        },
+        Commands::GetRuleStats { map_path, rule_ids } => {
+            let map = bpfmap::open_bpf_map(&map_path, "rule_counters_map")?;
+            if rule_ids.is_empty() {
+                // get all entries
+                for rule_id in 0..1024 {
+                    match bpfmap::get_rule_counters(&map, rule_id) {
+                        Ok(counters) => {
+                            if counters.initialized != 0 {
+                                println!("Rule ID {}: {:?}", rule_id, counters);
+                            }
+                        }
+                        Err(e) => eprintln!("Error getting counters for rule {}: {}", rule_id, e),
+                    }
+                }
+            } else {
+                for &rule_id in &rule_ids {
+                    match bpfmap::get_rule_counters(&map, rule_id) {
+                        Ok(counters) => println!("Rule ID {}: {:?}", rule_id, counters),
+                        Err(e) => eprintln!("Error getting counters for rule {}: {}", rule_id, e),
+                    }
+                }
+            }
         }
     }
     Ok(())

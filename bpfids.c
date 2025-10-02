@@ -4,6 +4,41 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <bpf/bpf_endian.h>
+#include <linux/time.h>
+
+/*
+ * Timer based rolling counters
+ * We maintain a monotonic total per rule plus snapshot values captured
+ * at 1s, 60s, 3600s, 86400s intervals. Userspace can compute the count
+ * over the last window W as (total - snapshot_W). A periodic per-rule
+ * bpf_timer updates the snapshots. This avoids maintaining large ring
+ * buffers inside eBPF while still giving rolling window semantics.
+ */
+
+struct rule_counters {
+    struct bpf_timer timer;      /* MUST be first field */
+    __u64 total;                 /* Monotonic total hits */
+    __u64 snap_1s;               /* Total value captured >=1s ago */
+    __u64 snap_60s;              /* Captured >=60s ago */
+    __u64 snap_3600s;            /* Captured >=3600s ago */
+    __u64 snap_86400s;           /* Captured >=86400s ago */
+    __u64 ts_1s;                 /* Last time snap_1s updated */
+    __u64 ts_60s;                /* Last time snap_60s updated */
+    __u64 ts_3600s;              /* Last time snap_3600s updated */
+    __u64 ts_86400s;             /* Last time snap_86400s updated */
+    __u8  initialized;           /* One-time timer init guard */
+};
+
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __type(key, __u32);
+        __type(value, struct rule_counters);
+        __uint(max_entries, 1024);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rule_counters_map SEC(".maps");
+
+/* Forward declaration of timer callback so we can reference it in rule_hit */
+static int rule_timer_cb(void *map, int *key, struct rule_counters *rc);
 
 struct {
         __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -51,6 +86,60 @@ static inline void rule_hit(__u32 rule_id)
         long initial_value = 1;
         bpf_map_update_elem(&rule_hits, &key, &initial_value, BPF_ANY);
     }
+
+    /* Timed counters */
+    struct rule_counters *rc = bpf_map_lookup_elem(&rule_counters_map, &key);
+    if (!rc) {
+        return; /* Should not happen for ARRAY map, but be safe */
+    }
+    /* Initialize timer once */
+    if (!rc->initialized) {
+        /* Attempt to obtain a lock-free one-time init using xchg on initialized */
+        __u8 zero = 0;
+        if (__sync_bool_compare_and_swap(&rc->initialized, zero, 1)) {
+            __u64 now = bpf_ktime_get_ns();
+            rc->ts_1s = rc->ts_60s = rc->ts_3600s = rc->ts_86400s = now;
+            rc->snap_1s = rc->snap_60s = rc->snap_3600s = rc->snap_86400s = 0;
+            /* Prepare timer */
+            bpf_timer_init(&rc->timer, &rule_counters_map, CLOCK_MONOTONIC);
+            bpf_timer_set_callback(&rc->timer, rule_timer_cb);
+            /* Fire first callback after 1 second */
+            bpf_timer_start(&rc->timer, 1000000000ULL /*1s*/, 0);
+        }
+    }
+    __sync_fetch_and_add(&rc->total, 1);
+}
+
+/* Timer callback updates snapshots for each rule. */
+static int rule_timer_cb(void *map, int *key, struct rule_counters *rc)
+{
+    __u64 now = bpf_ktime_get_ns();
+    const __u64 NS_1S = 1000000000ULL;
+    const __u64 NS_60S = 60ULL * 1000000000ULL;
+    const __u64 NS_3600S = 3600ULL * 1000000000ULL;
+    const __u64 NS_86400S = 86400ULL * 1000000000ULL;
+
+    /* Update snapshots if interval elapsed. We use >= to tolerate drift */
+    if (now - rc->ts_1s >= NS_1S) {
+        rc->snap_1s = rc->total;
+        rc->ts_1s = now;
+    }
+    if (now - rc->ts_60s >= NS_60S) {
+        rc->snap_60s = rc->total;
+        rc->ts_60s = now;
+    }
+    if (now - rc->ts_3600s >= NS_3600S) {
+        rc->snap_3600s = rc->total;
+        rc->ts_3600s = now;
+    }
+    if (now - rc->ts_86400s >= NS_86400S) {
+        rc->snap_86400s = rc->total;
+        rc->ts_86400s = now;
+    }
+
+    /* Reschedule for next second */
+    bpf_timer_start(&rc->timer, NS_1S, 0);
+    return 0;
 }
 
 SEC("xdp")
