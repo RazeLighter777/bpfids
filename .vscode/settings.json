@@ -1,0 +1,6 @@
+{
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
+    "files.associations": {
+        "ip.h": "c"
+    }
+}

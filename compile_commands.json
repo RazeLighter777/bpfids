@@ -1,0 +1,18 @@
+[
+  {
+    "arguments": [
+      "/nix/store/cxz1zah18gym5mmgkg979ycl82nd7ks0-clang-21.1.1/bin/clang",
+      "-O2",
+      "-Wall",
+      "-Werror",
+      "-I/nix/store/y589d4y7c17qz31h8in8ak2lgrk6cq3b-linux-headers-6.16/include",
+      "-I/nix/store/8jgnmlzb820a1bkff5bkwl1qi681qz7n-libbpf-1.6.2/include",
+      "-target",
+      "bpf",
+      "-c",
+      "bpfids.c"
+    ],
+    "directory": "/home/justin/Code/bpfids",
+    "file": "/home/justin/Code/bpfids/bpfids.c"
+  }
+]

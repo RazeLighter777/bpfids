@@ -1,0 +1,281 @@
+{
+  "rules": [
+    {
+      "action": "Alert",
+      "expr": {
+        "And": [
+          { "Match": { "DestinationHost": "192.168.1.1" } },
+          { "Match": { "SourceHost": "::1" } }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "Or": [
+          {
+            "And": [
+              { "Match": { "SourceNet": ["10.0.0.0", 8] } },
+              { "Match": { "DestinationHost": "192.168.1.100" } }
+            ]
+          },
+          {
+            "And": [
+              { "Match": { "SourceNet": ["172.16.0.0", 12] } },
+              { "Match": { "DestinationNet": ["192.168.0.0", 16] } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Log",
+      "expr": {
+        "And": [
+          {
+            "Or": [
+              { "Match": { "SourceHost": "192.168.1.100" } },
+              { "Match": { "SourceHost": "192.168.1.101" } }
+            ]
+          },
+          {
+            "Not": {
+              "Match": { "DestinationNet": ["127.0.0.0", 8] }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "Or": [
+          {
+            "And": [
+              { "Match": { "SourceNet": ["172.20.0.0", 16] } },
+              {
+                "Not": {
+                  "Match": { "DestinationNet": ["10.10.0.0", 16] }
+                }
+              }
+            ]
+          },
+          {
+            "And": [
+              { "Match": { "SourceHost": "203.0.113.10" } },
+              { "Match": { "DestinationHost": "8.8.8.8" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "And": [
+          {
+            "Or": [
+              { "Match": { "SourceNet": ["192.168.0.0", 16] } },
+              { "Match": { "SourceNet": ["10.0.0.0", 8] } }
+            ]
+          },
+          {
+            "Not": {
+              "Or": [
+                { "Match": { "DestinationHost": "8.8.8.8" } },
+                { "Match": { "DestinationHost": "1.1.1.1" } }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "And": [
+          {
+            "Or": [
+              {
+                "And": [
+                  { "Match": { "SourceNet": ["2001:db8::", 32] } },
+                  { "Match": { "DestinationNet": ["2001:470::", 32] } }
+                ]
+              },
+              {
+                "And": [
+                  { "Match": { "SourceNet": ["fe80::", 10] } },
+                  { "Match": { "DestinationNet": ["ff02::", 16] } }
+                ]
+              }
+            ]
+          },
+          {
+            "Not": {
+              "Match": { "SourceHost": "2001:db8::dead:beef" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action": "Log",
+      "expr": {
+        "Or": [
+          {
+            "And": [
+              { "Match": { "SourceHost": "198.51.100.42" } },
+              {
+                "Or": [
+                  { "Match": { "DestinationNet": ["224.0.0.0", 4] } },
+                  { "Match": { "DestinationNet": ["239.0.0.0", 8] } }
+                ]
+              }
+            ]
+          },
+          {
+            "And": [
+              { "Match": { "SourceNet": ["169.254.0.0", 16] } },
+              {
+                "Not": {
+                  "Match": { "DestinationNet": ["169.254.0.0", 16] }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "And": [
+          {
+            "Or": [
+              {
+                "And": [
+                  { "Match": { "SourceNet": ["192.168.100.0", 24] } },
+                  {
+                    "Not": {
+                      "Or": [
+                        { "Match": { "SourceHost": "192.168.100.1" } },
+                        { "Match": { "SourceHost": "192.168.100.254" } }
+                      ]
+                    }
+                  }
+                ]
+              },
+              { "Match": { "SourceNet": ["172.31.0.0", 16] } }
+            ]
+          },
+          {
+            "Not": {
+              "And": [
+                { "Match": { "SourceNet": ["192.168.100.0", 29] } },
+                { "Match": { "DestinationNet": ["192.168.100.0", 24] } }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "Or": [
+          {
+            "And": [
+              { "Match": { "SourceHost": "::ffff:192.0.2.1" } },
+              { "Match": { "DestinationNet": ["2001:470::", 32] } }
+            ]
+          },
+          {
+            "And": [
+              {
+                "Or": [
+                  { "Match": { "SourceNet": ["198.18.0.0", 15] } },
+                  { "Match": { "SourceNet": ["203.0.113.0", 24] } }
+                ]
+              },
+              {
+                "Not": {
+                  "Match": { "DestinationHost": "127.0.0.1" }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "And": [
+          {
+            "Not": {
+              "Or": [
+                { "Match": { "SourceNet": ["192.168.0.0", 16] } },
+                { "Match": { "SourceNet": ["10.0.0.0", 8] } }
+              ]
+            }
+          },
+          {
+            "Or": [
+              { "Match": { "DestinationNet": ["192.168.0.0", 16] } },
+              { "Match": { "DestinationNet": ["10.0.0.0", 8] } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Log",
+      "expr": {
+        "And": [
+          {
+            "Or": [
+              { "Match": { "SourceNet": ["192.168.50.0", 24] } },
+              { "Match": { "SourceNet": ["10.1.0.0", 16] } }
+            ]
+          },
+          {
+            "And": [
+              { "Match": { "DestinationNet": ["172.16.0.0", 12] } },
+              {
+                "Not": {
+                  "Or": [
+                    { "Match": { "DestinationHost": "172.16.1.1" } },
+                    { "Match": { "DestinationHost": "172.16.254.254" } }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "action": "Alert",
+      "expr": {
+        "Or": [
+          {
+            "And": [
+              { "Match": { "SourceNet": ["2001:db8:1000::", 48] } },
+              { "Match": { "DestinationNet": ["2001:db8:2000::", 48] } }
+            ]
+          },
+          {
+            "And": [
+              { "Match": { "SourceHost": "fc00::1" } },
+              {
+                "Not": {
+                  "Match": { "DestinationNet": ["fc00::", 7] }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
