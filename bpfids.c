@@ -4,13 +4,13 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <bpf/bpf_endian.h>
-#include <linux/types.h>
 
 struct {
         __uint(type, BPF_MAP_TYPE_ARRAY);
         __type(key, __u32);
         __type(value, long);
         __uint(max_entries, 1024);
+        __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rule_hits SEC(".maps");
 
 

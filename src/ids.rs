@@ -87,15 +87,15 @@ impl IdsRule {
         let expr_c = self.expr.to_c_with_memo(memo);
         let rule_description = format!("{:?}", self.expr).replace("\"", "\\\"");
         let action_c = match self.action {
-            IdsAction::XdpDrop => "return XDP_DROP;".to_string(),
-            IdsAction::XdpPass => "return XDP_PASS;".to_string(),
+            IdsAction::XdpDrop => format!("rule_hit({}); return XDP_DROP;", rule_num,),
+            IdsAction::XdpPass => format!("rule_hit({}); return XDP_PASS;", rule_num,),
             IdsAction::Alert => format!(
                 "bpf_printk(\"ALERT: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
                 rule_description, rule_num,
             ),
             IdsAction::Log => format!(
-                "bpf_printk(\"LOG: Rule matched - {}\\n\"); return XDP_PASS;",
-                rule_description
+                "bpf_printk(\"LOG: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
+                rule_description, rule_num
             ),
         };
         format!("if ({}) {{ {} }}", expr_c, action_c)
