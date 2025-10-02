@@ -53,7 +53,7 @@
         ];
         shellHook = ''
           export CC=clang
-          export CFLAGS="-O2 -Wall -Werror -I${pkgs.linuxHeaders}/include $(pkg-config --cflags libbpf) -target bpf"
+          export CFLAGS="-O2 -Wall -Werror -Wno-unused-function -I${pkgs.linuxHeaders}/include $(pkg-config --cflags libbpf) -target bpf"
           export LDFLAGS="$(pkg-config --libs libbpf)"
         '';
       };

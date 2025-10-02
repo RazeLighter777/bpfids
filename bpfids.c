@@ -4,14 +4,15 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <bpf/bpf_endian.h>
+#include <linux/types.h>
 
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __type(key, __u32);
+        __type(value, long);
+        __uint(max_entries, 1024);
+} rule_hits SEC(".maps");
 
-#define OR(a, b) ((a) | (b))
-#define AND(a, b) ((a) & (b))
-#define NOT(a) (~(a))
-#define XOR(a, b) ((a) ^ (b))
-#define EQ(a, b) ((a) == (b))
-#define NEQ(a, b) ((a) != (b))
 
 struct filter_context
 {
@@ -22,7 +23,7 @@ struct filter_context
 };
 
 
-const static inline struct in6_addr apply_ipv6_netmask(const struct in6_addr *ip, __u8 prefix)
+const static inline struct in6_addr  apply_ipv6_netmask(const struct in6_addr *ip, __u8 prefix) 
 {
     struct in6_addr masked_ip = {};
     if (prefix > 128)
@@ -40,11 +41,21 @@ const static inline struct in6_addr apply_ipv6_netmask(const struct in6_addr *ip
     }
     return masked_ip;
 }
+static inline void rule_hit(__u32 rule_id)
+{
+    __u32 key = rule_id;
+    long *value = bpf_map_lookup_elem(&rule_hits, &key);
+    if (value) {
+        __sync_fetch_and_add(value, 1);
+    } else {
+        long initial_value = 1;
+        bpf_map_update_elem(&rule_hits, &key, &initial_value, BPF_ANY);
+    }
+}
 
 SEC("xdp")
 int packet_filter(struct xdp_md *ctx)
 {
-    bpf_printk("Packet filter triggered\n");
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     struct filter_context fctx = {0};
@@ -70,6 +81,10 @@ int packet_filter(struct xdp_md *ctx)
         fctx.dst_ip6 = ip6->daddr;
     is_ipv6 = 1;
     }
+    // print debug info
+    bpf_printk("Packet: is_ipv4=%d, is_ipv6=%d\n", is_ipv4, is_ipv6);
+    bpf_printk("Packet: src_ip=%x, dst_ip=%x\n", fctx.src_ip, fctx.dst_ip);
+    
 
     /* Generated rules: first match returns */
 #if __has_include("bpfidsrules.c")
