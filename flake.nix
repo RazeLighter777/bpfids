@@ -44,9 +44,16 @@
             buildInputs = with pkgs; [
               linuxHeaders
               libbpf
+              glibc.dev
+              elfutils.dev
+              zlib
             ];
             nativeBuildInputs = with pkgs; [
               llvmPackages_21.clang-unwrapped
+              llvmPackages_21.libcxx
+              llvmPackages_21.libllvm
+              llvmPackages_21.clang-tools
+              llvmPackages_21.clang
               (rust-bin.stable.latest.default.override {
                 extensions = [
                   "rust-src"
@@ -60,10 +67,14 @@
               bpftools
             ];
             shellHook = ''
-              export CC=clang
-              export CFLAGS="-g -O2 -Wall -Werror -Wno-unused-function -I${pkgs.linuxHeaders}/include $(pkg-config --cflags libbpf) -target bpf"
-              export LDFLAGS="$(pkg-config --libs libbpf)"
+              export BPFCC=${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang
+
+              export BPFCFLAGS="-g -O2 -Wall -Werror -Wno-unused-function -I${pkgs.linuxHeaders}/include $(pkg-config --cflags libbpf) -target bpf"
+              export BPFLDFLAGS="$(pkg-config --libs libbpf)"
+              export CC=${pkgs.llvmPackages_21.clang}/bin/clang
+              export CXX=${pkgs.llvmPackages_21.clang}/bin/clang++
             '';
+            stdenv = pkgs.llvmPackages_21.stdenv;
           };
         }
       );

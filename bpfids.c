@@ -26,7 +26,7 @@ struct rule_counters {
     __u64 ts_60s;                /* Last time snap_60s updated */
     __u64 ts_3600s;              /* Last time snap_3600s updated */
     __u64 ts_86400s;             /* Last time snap_86400s updated */
-    __u8  initialized;           /* One-time timer init guard */
+    __u32  initialized;           /* One-time timer init guard */
 };
 
 struct {

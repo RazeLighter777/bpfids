@@ -1,5 +1,5 @@
 bpfids.o: bpfids.c bpfidsrules.c
-	$(CC) $(CFLAGS) -c bpfids.c
+	$(BPFCC) $(BPFCFLAGS) -c bpfids.c
 bpfidsrules.c:
 	cargo run -- build
 clean:
