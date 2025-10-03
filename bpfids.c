@@ -5,6 +5,8 @@
 #include <linux/ipv6.h>
 #include <bpf/bpf_endian.h>
 #include <linux/time.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 
 /*
  * Timer based rolling counters
@@ -55,6 +57,10 @@ struct filter_context
     __u32 dst_ip;
     struct in6_addr src_ip6;
     struct in6_addr dst_ip6;
+    __u16 src_port;          /* TCP/UDP source port (host order) */
+    __u16 dst_port;          /* TCP/UDP destination port (host order) */
+    __u8  is_tcp;            /* 1 if TCP header parsed */
+    __u8  is_udp;            /* 1 if UDP header parsed */
 };
 
 
@@ -161,18 +167,64 @@ int packet_filter(struct xdp_md *ctx)
             return XDP_PASS;
         fctx.src_ip = bpf_ntohl(ip->saddr);
         fctx.dst_ip = bpf_ntohl(ip->daddr);
-    is_ipv4 = 1;
+        is_ipv4 = 1;
+        /* Parse L4 header if TCP/UDP */
+        __u8 proto = ip->protocol;
+        __u8 ihl = ip->ihl; /* number of 32-bit words */
+        if (ihl < 5)
+            goto after_l4_parse; /* malformed, skip */
+        __u32 ip_hdr_len = (__u32)ihl * 4;
+        void *l4 = (void *)ip + ip_hdr_len;
+        if (l4 > data_end)
+            goto after_l4_parse;
+        if (proto == IPPROTO_TCP) {
+            struct tcphdr *th = l4;
+            if ((void *)(th + 1) > data_end)
+                goto after_l4_parse;
+            fctx.src_port = bpf_ntohs(th->source);
+            fctx.dst_port = bpf_ntohs(th->dest);
+            fctx.is_tcp = 1;
+        } else if (proto == IPPROTO_UDP) {
+            struct udphdr *uh = l4;
+            if ((void *)(uh + 1) > data_end)
+                goto after_l4_parse;
+            fctx.src_port = bpf_ntohs(uh->source);
+            fctx.dst_port = bpf_ntohs(uh->dest);
+            fctx.is_udp = 1;
+        }
     } else if (eth->h_proto == __constant_htons(ETH_P_IPV6)) {
         struct ipv6hdr *ip6 = (void *)(eth + 1);
         if ((void *)(ip6 + 1) > data_end)
             return XDP_PASS;
         fctx.src_ip6 = ip6->saddr;
         fctx.dst_ip6 = ip6->daddr;
-    is_ipv6 = 1;
+        is_ipv6 = 1;
+        /* For now, only handle simple (no extension headers) TCP/UDP */
+        __u8 nexthdr = ip6->nexthdr;
+        void *l4 = (void *)(ip6 + 1); /* IPv6 header fixed 40 bytes */
+        if (l4 > data_end)
+            goto after_l4_parse;
+        if (nexthdr == IPPROTO_TCP) {
+            struct tcphdr *th = l4;
+            if ((void *)(th + 1) > data_end)
+                goto after_l4_parse;
+            fctx.src_port = bpf_ntohs(th->source);
+            fctx.dst_port = bpf_ntohs(th->dest);
+            fctx.is_tcp = 1;
+        } else if (nexthdr == IPPROTO_UDP) {
+            struct udphdr *uh = l4;
+            if ((void *)(uh + 1) > data_end)
+                goto after_l4_parse;
+            fctx.src_port = bpf_ntohs(uh->source);
+            fctx.dst_port = bpf_ntohs(uh->dest);
+            fctx.is_udp = 1;
+        }
     }
     // print debug info
     bpf_printk("Packet: is_ipv4=%d, is_ipv6=%d\n", is_ipv4, is_ipv6);
     bpf_printk("Packet: src_ip=%x, dst_ip=%x\n", fctx.src_ip, fctx.dst_ip);
+    bpf_printk("L4: src_port=%u dst_port=%u is_tcp=%d is_udp=%d\n", fctx.src_port, fctx.dst_port, fctx.is_tcp, fctx.is_udp);
+after_l4_parse:
     
 
     /* Generated rules: first match returns */

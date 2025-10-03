@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(counters) => {
                             if counters.initialized != 0 {
                                 println!(
-                                    "Rule ID {}: {:?}",
+                                    "Rule ID {}: {}",
                                     rule_id,
                                     bpfmap::compute_rulecounters_last_intervals_string(&counters)
                                 );

@@ -14,6 +14,11 @@ pub(crate) enum IdsMatch {
     DestinationHost(IpAddr),
     SourceNet(IpAddr, u8),
     DestinationNet(IpAddr, u8),
+    // TCP/UDP port (single or inclusive range). If end is None => single port.
+    SourcePortTcp(u16, Option<u16>),
+    DestinationPortTcp(u16, Option<u16>),
+    SourcePortUdp(u16, Option<u16>),
+    DestinationPortUdp(u16, Option<u16>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -162,6 +167,31 @@ impl IdsMatch {
 
     pub fn to_c(&self) -> String {
         match self {
+            // L4 port matches (ranges inclusive)
+            IdsMatch::SourcePortTcp(start, end_opt) => {
+                match end_opt {
+                    Some(end) => format!("(fctx.is_tcp && fctx.src_port >= {} && fctx.src_port <= {})", start, end),
+                    None => format!("(fctx.is_tcp && fctx.src_port == {})", start),
+                }
+            }
+            IdsMatch::DestinationPortTcp(start, end_opt) => {
+                match end_opt {
+                    Some(end) => format!("(fctx.is_tcp && fctx.dst_port >= {} && fctx.dst_port <= {})", start, end),
+                    None => format!("(fctx.is_tcp && fctx.dst_port == {})", start),
+                }
+            }
+            IdsMatch::SourcePortUdp(start, end_opt) => {
+                match end_opt {
+                    Some(end) => format!("(fctx.is_udp && fctx.src_port >= {} && fctx.src_port <= {})", start, end),
+                    None => format!("(fctx.is_udp && fctx.src_port == {})", start),
+                }
+            }
+            IdsMatch::DestinationPortUdp(start, end_opt) => {
+                match end_opt {
+                    Some(end) => format!("(fctx.is_udp && fctx.dst_port >= {} && fctx.dst_port <= {})", start, end),
+                    None => format!("(fctx.is_udp && fctx.dst_port == {})", start),
+                }
+            }
             // IPv6 network matches need special handling
             IdsMatch::SourceNet(IpAddr::V6(ipv6), prefix) => {
                 let masked_addr = Self::ipv6_to_in6_addr_masked(ipv6, *prefix);
@@ -195,6 +225,11 @@ impl IdsMatch {
                     // These cases are handled above
                     IdsMatch::SourceNet(IpAddr::V6(_), _) => unreachable!(),
                     IdsMatch::DestinationNet(IpAddr::V6(_), _) => unreachable!(),
+                    // Port variants handled earlier
+                    IdsMatch::SourcePortTcp(_, _) => unreachable!(),
+                    IdsMatch::DestinationPortTcp(_, _) => unreachable!(),
+                    IdsMatch::SourcePortUdp(_, _) => unreachable!(),
+                    IdsMatch::DestinationPortUdp(_, _) => unreachable!(),
                 };
                 let memcmp_arg2 = match self {
                     IdsMatch::SourceHost(IpAddr::V4(ip)) => {
@@ -216,6 +251,10 @@ impl IdsMatch {
                     // These cases are handled above
                     IdsMatch::SourceNet(IpAddr::V6(_), _) => unreachable!(),
                     IdsMatch::DestinationNet(IpAddr::V6(_), _) => unreachable!(),
+                    IdsMatch::SourcePortTcp(_, _) => unreachable!(),
+                    IdsMatch::DestinationPortTcp(_, _) => unreachable!(),
+                    IdsMatch::SourcePortUdp(_, _) => unreachable!(),
+                    IdsMatch::DestinationPortUdp(_, _) => unreachable!(),
                 };
                 let use_eq_not_memcmp = match self {
                     IdsMatch::SourceHost(IpAddr::V4(_)) => true,
