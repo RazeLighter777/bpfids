@@ -41,11 +41,6 @@ pub(crate) struct Config {
 }
 
 use std::collections::HashSet;
-
-pub enum IpHeader {
-    V4,
-    V6,
-}
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeclDependency {
     EthHeader,
@@ -100,23 +95,13 @@ impl DeclDependency {
             DeclDependency::UdpDstPort => "if (fctx.udp != NULL) { fctx.udp_dst_port = extract_udp_dst_port(fctx.udp); }",
         }
     }
-}
-impl DeclDependency {
-    pub fn to_c_include(&self) -> &'static str {
-        match self {
-            _ => unimplemented!(),
-        }
-    }
+
     pub fn from_ids_match(m: &IdsMatch) -> Vec<DeclDependency> {
         match m {
-            IdsMatch::SourceHost(IpAddr::V4(_)) => vec![DeclDependency::IpHeader],
-            IdsMatch::DestinationHost(IpAddr::V4(_)) => vec![DeclDependency::IpHeader],
-            IdsMatch::SourceNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
-            IdsMatch::DestinationNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
-            IdsMatch::SourceHost(IpAddr::V6(_)) => vec![DeclDependency::Ipv6Header],
-            IdsMatch::DestinationHost(IpAddr::V6(_)) => vec![DeclDependency::Ipv6Header],
-            IdsMatch::SourceNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
-            IdsMatch::DestinationNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
+            IdsMatch::SourceHost(IpAddr::V4(_)) | IdsMatch::DestinationHost(IpAddr::V4(_)) |
+            IdsMatch::SourceNet(IpAddr::V4(_), _) | IdsMatch::DestinationNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
+            IdsMatch::SourceHost(IpAddr::V6(_)) | IdsMatch::DestinationHost(IpAddr::V6(_)) |
+            IdsMatch::SourceNet(IpAddr::V6(_), _) | IdsMatch::DestinationNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
             IdsMatch::SourcePortTcp(_, _) => vec![DeclDependency::TcpSrcPort],
             IdsMatch::DestinationPortTcp(_, _) => vec![DeclDependency::TcpDstPort],
             IdsMatch::SourcePortUdp(_, _) => vec![DeclDependency::UdpSrcPort],
@@ -166,22 +151,18 @@ impl IdsRule {
         let (dep_code, expr_c) = self.expr.to_c_lazy(global_emitted_deps);
         let rule_description = format!("{:?}", self.expr).replace("\"", "\\\"");
         let action_c = match self.action {
-            IdsAction::XdpDrop => format!("rule_hit({}); return XDP_DROP;", rule_num,),
-            IdsAction::XdpPass => format!("rule_hit({}); return XDP_PASS;", rule_num,),
+            IdsAction::XdpDrop => format!("rule_hit({}); return XDP_DROP;", rule_num),
+            IdsAction::XdpPass => format!("rule_hit({}); return XDP_PASS;", rule_num),
             IdsAction::Alert => format!(
                 "bpf_printk(\"ALERT: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
-                rule_description, rule_num,
+                rule_description, rule_num
             ),
             IdsAction::Log => format!(
                 "bpf_printk(\"LOG: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
                 rule_description, rule_num
             ),
         };
-        if dep_code.trim().is_empty() {
-            format!("if ({}) {{ {} }}", expr_c, action_c)
-        } else {
-            format!("{}if ({}) {{ {} }}", dep_code, expr_c, action_c)
-        }
+        format!("{}if ({}) {{ {} }}", dep_code, expr_c, action_c)
     }
 }
 
@@ -197,6 +178,7 @@ impl Config {
         out
     }
 }
+
 impl IdsMatch {
     fn ipv6_to_in6_addr(ipv6: &std::net::Ipv6Addr) -> String {
         // Produce a byte-accurate initializer so memcmp matches wire/network order
@@ -238,28 +220,32 @@ impl IdsMatch {
         match self {
             // L4 port matches (ranges inclusive)
             IdsMatch::SourcePortTcp(start, end_opt) => {
-                match end_opt {
-                    Some(end) => format!("(fctx.tcp != NULL && fctx.tcp_src_port >= {} && fctx.tcp_src_port <= {})", start, end),
-                    None => format!("(fctx.tcp != NULL && fctx.tcp_src_port == {})", start),
-                }
+                let port_check = match end_opt {
+                    Some(end) => format!("fctx.tcp_src_port >= {} && fctx.tcp_src_port <= {}", start, end),
+                    None => format!("fctx.tcp_src_port == {}", start),
+                };
+                format!("(fctx.tcp != NULL && {})", port_check)
             }
             IdsMatch::DestinationPortTcp(start, end_opt) => {
-                match end_opt {
-                    Some(end) => format!("(fctx.tcp != NULL && fctx.tcp_dst_port >= {} && fctx.tcp_dst_port <= {})", start, end),
-                    None => format!("(fctx.tcp != NULL && fctx.tcp_dst_port == {})", start),
-                }
+                let port_check = match end_opt {
+                    Some(end) => format!("fctx.tcp_dst_port >= {} && fctx.tcp_dst_port <= {}", start, end),
+                    None => format!("fctx.tcp_dst_port == {}", start),
+                };
+                format!("(fctx.tcp != NULL && {})", port_check)
             }
             IdsMatch::SourcePortUdp(start, end_opt) => {
-                match end_opt {
-                    Some(end) => format!("(fctx.udp != NULL && fctx.udp_src_port >= {} && fctx.udp_src_port <= {})", start, end),
-                    None => format!("(fctx.udp != NULL && fctx.udp_src_port == {})", start),
-                }
+                let port_check = match end_opt {
+                    Some(end) => format!("fctx.udp_src_port >= {} && fctx.udp_src_port <= {}", start, end),
+                    None => format!("fctx.udp_src_port == {}", start),
+                };
+                format!("(fctx.udp != NULL && {})", port_check)
             }
             IdsMatch::DestinationPortUdp(start, end_opt) => {
-                match end_opt {
-                    Some(end) => format!("(fctx.udp != NULL && fctx.udp_dst_port >= {} && fctx.udp_dst_port <= {})", start, end),
-                    None => format!("(fctx.udp != NULL && fctx.udp_dst_port == {})", start),
-                }
+                let port_check = match end_opt {
+                    Some(end) => format!("fctx.udp_dst_port >= {} && fctx.udp_dst_port <= {}", start, end),
+                    None => format!("fctx.udp_dst_port == {}", start),
+                };
+                format!("(fctx.udp != NULL && {})", port_check)
             }
             // IPv6 network matches need special handling
             IdsMatch::SourceNet(IpAddr::V6(ipv6), prefix) => {
@@ -276,69 +262,34 @@ impl IdsMatch {
                     prefix, masked_addr
                 )
             }
-            // All other matches use the original logic
+            // All other matches use common logic
             _ => {
-                // Remember the IP addresses are in network byte order
-                let memcmp_arg1 = match self {
-                    IdsMatch::SourceHost(IpAddr::V4(_)) => format!("fctx.src_ip"),
-                    IdsMatch::DestinationHost(IpAddr::V4(_)) => format!("fctx.dst_ip"),
-                    // netmask is opposite because endianess
-                    IdsMatch::SourceNet(IpAddr::V4(_), prefix) => {
-                        format!("(fctx.src_ip & {})", u32::MAX << (32 - prefix))
-                    }
-                    IdsMatch::DestinationNet(IpAddr::V4(_), prefix) => {
-                        format!("(fctx.dst_ip & {})", u32::MAX << (32 - prefix))
-                    }
-                    IdsMatch::SourceHost(IpAddr::V6(_)) => format!("fctx.src_ip6"),
-                    IdsMatch::DestinationHost(IpAddr::V6(_)) => format!("fctx.dst_ip6"),
-                    // These cases are handled above
-                    IdsMatch::SourceNet(IpAddr::V6(_), _) => unreachable!(),
-                    IdsMatch::DestinationNet(IpAddr::V6(_), _) => unreachable!(),
-                    // Port variants handled earlier
-                    IdsMatch::SourcePortTcp(_, _) => unreachable!(),
-                    IdsMatch::DestinationPortTcp(_, _) => unreachable!(),
-                    IdsMatch::SourcePortUdp(_, _) => unreachable!(),
-                    IdsMatch::DestinationPortUdp(_, _) => unreachable!(),
-                };
-                let memcmp_arg2 = match self {
+                match self {
                     IdsMatch::SourceHost(IpAddr::V4(ip)) => {
-                        format!("0x{:08x}", (u32::from(*ip)).to_le())
+                        format!("fctx.src_ip == 0x{:08x}", (u32::from(*ip)).to_le())
                     }
                     IdsMatch::DestinationHost(IpAddr::V4(ip)) => {
-                        format!("0x{:08x}", (u32::from(*ip)).to_le())
+                        format!("fctx.dst_ip == 0x{:08x}", (u32::from(*ip)).to_le())
                     }
-                    IdsMatch::SourceNet(IpAddr::V4(ip), l) => format!(
-                        "0x{:08x}",
-                        ((u32::from(*ip) & (u32::MAX << (32 - l))).to_le())
-                    ),
-                    IdsMatch::DestinationNet(IpAddr::V4(ip), l) => format!(
-                        "0x{:08x}",
-                        ((u32::from(*ip) & (u32::MAX << (32 - l))).to_le())
-                    ),
-                    IdsMatch::SourceHost(IpAddr::V6(ipv6)) => Self::ipv6_to_in6_addr(ipv6),
-                    IdsMatch::DestinationHost(IpAddr::V6(ipv6)) => Self::ipv6_to_in6_addr(ipv6),
-                    // These cases are handled above
-                    IdsMatch::SourceNet(IpAddr::V6(_), _) => unreachable!(),
-                    IdsMatch::DestinationNet(IpAddr::V6(_), _) => unreachable!(),
-                    IdsMatch::SourcePortTcp(_, _) => unreachable!(),
-                    IdsMatch::DestinationPortTcp(_, _) => unreachable!(),
-                    IdsMatch::SourcePortUdp(_, _) => unreachable!(),
-                    IdsMatch::DestinationPortUdp(_, _) => unreachable!(),
-                };
-                let use_eq_not_memcmp = match self {
-                    IdsMatch::SourceHost(IpAddr::V4(_)) => true,
-                    IdsMatch::DestinationHost(IpAddr::V4(_)) => true,
-                    IdsMatch::SourceNet(IpAddr::V4(_), _) => true,
-                    IdsMatch::DestinationNet(IpAddr::V4(_), _) => true,
-                    _ => false, // for ipv6 we always use memcmp
-                };
-                if use_eq_not_memcmp {
-                    format!("{} == {}", memcmp_arg1, memcmp_arg2)
-                } else {
-                    format!(
-                        "__builtin_memcmp((const void*)&{}, (const void*)&{}, {}) == 0",
-                        memcmp_arg1, memcmp_arg2, 16
-                    )
+                    IdsMatch::SourceNet(IpAddr::V4(ip), prefix) => {
+                        format!("(fctx.src_ip & {}) == 0x{:08x}", 
+                               u32::MAX << (32 - prefix),
+                               ((u32::from(*ip) & (u32::MAX << (32 - prefix))).to_le()))
+                    }
+                    IdsMatch::DestinationNet(IpAddr::V4(ip), prefix) => {
+                        format!("(fctx.dst_ip & {}) == 0x{:08x}", 
+                               u32::MAX << (32 - prefix),
+                               ((u32::from(*ip) & (u32::MAX << (32 - prefix))).to_le()))
+                    }
+                    IdsMatch::SourceHost(IpAddr::V6(ipv6)) => {
+                        format!("__builtin_memcmp((const void*)&fctx.src_ip6, (const void*)&{}, 16) == 0", 
+                               Self::ipv6_to_in6_addr(ipv6))
+                    }
+                    IdsMatch::DestinationHost(IpAddr::V6(ipv6)) => {
+                        format!("__builtin_memcmp((const void*)&fctx.dst_ip6, (const void*)&{}, 16) == 0", 
+                               Self::ipv6_to_in6_addr(ipv6))
+                    }
+                    _ => unreachable!(),
                 }
             }
         }
