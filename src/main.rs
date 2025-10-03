@@ -1,5 +1,9 @@
-use clap::{Command, Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+
+
+use clap::{ Parser, Subcommand};
 use serde_json;
 use std::net::{IpAddr, Ipv4Addr};
 mod bpfmap;

@@ -1,49 +1,6 @@
 use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use std::path::Path;
-/*
-struct rule_counters {
-    struct bpf_timer timer;      /* MUST be first field */ /*struct bpf_timer { __u64 :64; __u64 :64; };*/
-    __u64 total;                 /* Monotonic total hits */
-    __u64 snap_1s;               /* Total value captured >=1s ago */
-    __u64 snap_60s;              /* Captured >=60s ago */
-    __u64 snap_3600s;            /* Captured >=3600s ago */
-    __u64 snap_86400s;           /* Captured >=86400s ago */
-    __u64 ts_1s;                 /* Last time snap_1s updated */
-    __u64 ts_60s;                /* Last time snap_60s updated */
-    __u64 ts_3600s;              /* Last time snap_3600s updated */
-    __u64 ts_86400s;             /* Last time snap_86400s updated */
-    __u32  initialized;           /* One-time timer init guard */
-};
-struct {
-        __uint(type, BPF_MAP_TYPE_ARRAY);
-        __type(key, __u32);
-        __type(value, struct rule_counters);
-        __uint(max_entries, 1024);
-        __uint(pinning, LIBBPF_PIN_BY_NAME);
-} rule_counters_map SEC(".maps");
-*/
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Timer {
-    pub _reserved: u64,
-    pub expires: u64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RuleCounters {
-    pub timer: Timer,
-    pub total: u64,
-    pub snap_1s: u64,
-    pub snap_60s: u64,
-    pub snap_3600s: u64,
-    pub snap_86400s: u64,
-    pub ts_1s: u64,
-    pub ts_60s: u64,
-    pub ts_3600s: u64,
-    pub ts_86400s: u64,
-    pub initialized: u32,
-}
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 pub fn open_bpf_map<P: AsRef<Path>>(
     path: P,
@@ -64,7 +21,7 @@ pub fn open_bpf_map<P: AsRef<Path>>(
         .into());
     }
     // value size should be size of RuleCounters
-    if map.value_size() != std::mem::size_of::<RuleCounters>() as u32 {
+    if map.value_size() != std::mem::size_of::<rule_counters>() as u32 {
         return Err(format!(
             "Map {} has unexpected value size: {}",
             map_name,
@@ -78,19 +35,19 @@ pub fn open_bpf_map<P: AsRef<Path>>(
 pub fn get_rule_counters(
     map: &MapHandle,
     rule_id: u32,
-) -> Result<RuleCounters, Box<dyn std::error::Error>> {
+) -> Result<rule_counters, Box<dyn std::error::Error>> {
     let key = rule_id.to_ne_bytes();
     let value = map
         .lookup(&key, MapFlags::empty())?
         .ok_or("Key not found in map")?;
-    if value.len() != std::mem::size_of::<RuleCounters>() {
+    if value.len() != std::mem::size_of::<rule_counters>() {
         return Err(format!("Unexpected value size: {}", value.len()).into());
     }
-    let counters: RuleCounters = unsafe { std::ptr::read(value.as_ptr() as *const _) };
+    let counters: rule_counters = unsafe { std::ptr::read(value.as_ptr() as *const _) };
     Ok(counters)
 }
 
-pub fn compute_rulecounters_last_intervals_string(counter: &RuleCounters) -> String {
+pub fn compute_rulecounters_last_intervals_string(counter: &rule_counters) -> String {
     format!(
         "(last 1s: {}, last 1min: {}, last 1h: {}, last 1d: {})",
         counter.total - counter.snap_1s,

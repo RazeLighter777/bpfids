@@ -1,5 +1,3 @@
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
@@ -7,7 +5,13 @@
 #include <linux/time.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/types.h>
+#include <linux/in.h>
+#include <linux/in6.h>
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
 
+// Header existence helpers
 /*
  * Timer based rolling counters
  * We maintain a monotonic total per rule plus snapshot values captured
@@ -53,14 +57,19 @@ struct {
 
 struct filter_context
 {
+    struct ethhdr *eth;
+    struct iphdr *ip;
+    struct ipv6hdr *ip6;
+    struct tcphdr *tcp;
+    struct udphdr *udp;
     __u32 src_ip;
     __u32 dst_ip;
     struct in6_addr src_ip6;
     struct in6_addr dst_ip6;
-    __u16 src_port;          /* TCP/UDP source port (host order) */
-    __u16 dst_port;          /* TCP/UDP destination port (host order) */
-    __u8  is_tcp;            /* 1 if TCP header parsed */
-    __u8  is_udp;            /* 1 if UDP header parsed */
+    __u16 udp_src_port;
+    __u16 udp_dst_port;
+    __u16 tcp_src_port;
+    __u16 tcp_dst_port;
 };
 
 
@@ -148,6 +157,103 @@ static int rule_timer_cb(void *map, int *key, struct rule_counters *rc)
     return 0;
 }
 
+
+// Header existence helpers
+static __always_inline __u32 extract_src_ipv4(const struct iphdr *ip) {
+    return bpf_ntohl(ip->saddr);
+}
+
+static __always_inline __u32 extract_dst_ipv4(const struct iphdr *ip) {
+    return bpf_ntohl(ip->daddr);
+}
+
+static __always_inline struct in6_addr extract_src_ipv6(const struct ipv6hdr *ip6) {
+    return ip6->saddr;
+}
+
+static __always_inline struct in6_addr extract_dst_ipv6(const struct ipv6hdr *ip6) {
+    return ip6->daddr;
+}
+
+static __always_inline __u16 extract_tcp_src_port(const struct tcphdr *th) {
+    return bpf_ntohs(th->source);
+}
+
+static __always_inline __u16 extract_tcp_dst_port(const struct tcphdr *th) {
+    return bpf_ntohs(th->dest);
+}
+
+static __always_inline __u16 extract_udp_src_port(const struct udphdr *uh) {
+    return bpf_ntohs(uh->source);
+}
+
+static __always_inline __u16 extract_udp_dst_port(const struct udphdr *uh) {
+    return bpf_ntohs(uh->dest);
+}
+
+static __always_inline struct ethhdr *parse_ethhdr(void *data, void *data_end) {
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return NULL;
+    return eth;
+}
+
+static __always_inline struct iphdr *parse_iphdr(struct ethhdr *eth, void *data_end) {
+    if (eth->h_proto == bpf_htons(ETH_P_IP)) {
+        struct iphdr *ip = (void *)(eth + 1);
+        if ((void *)(ip + 1) > data_end)
+            return NULL;
+        return ip;
+    }
+    return NULL;
+}
+
+static __always_inline struct ipv6hdr *parse_ipv6hdr(struct ethhdr *eth, void *data_end) {
+    if (eth->h_proto == bpf_htons(ETH_P_IPV6)) {
+        struct ipv6hdr *ip6 = (void *)(eth + 1);
+        if ((void *)(ip6 + 1) > data_end)
+            return NULL;
+        return ip6;
+    }
+    return NULL;
+}
+
+static __always_inline struct tcphdr *parse_tcphdr(struct ethhdr* eth, void *data_end) {
+    struct iphdr *ip = parse_iphdr(eth, data_end);
+    if (ip && ip->protocol == IPPROTO_TCP) {
+        struct tcphdr *th = (void *)ip + (ip->ihl * 4);
+        if ((void *)(th + 1) > data_end)
+            return NULL;
+        return th;
+    }
+    struct ipv6hdr *ip6 = parse_ipv6hdr(eth, data_end);
+    if (ip6 && ip6->nexthdr == IPPROTO_TCP) {
+        struct tcphdr *th = (void *)(ip6 + 1);
+        if ((void *)(th + 1) > data_end)
+            return NULL;
+        return th;
+    }
+    return NULL;
+}
+
+static __always_inline struct udphdr *parse_udphdr(struct ethhdr* eth, void *data_end) {
+    struct iphdr *ip = parse_iphdr(eth, data_end);
+    if (ip && ip->protocol == IPPROTO_UDP) {
+        struct udphdr *uh = (void *)ip + (ip->ihl * 4);
+        if ((void *)(uh + 1) > data_end)
+            return NULL;
+        return uh;
+    }
+    struct ipv6hdr *ip6 = parse_ipv6hdr(eth, data_end);
+    if (ip6 && ip6->nexthdr == IPPROTO_UDP) {
+        struct udphdr *uh = (void *)(ip6 + 1);
+        if ((void *)(uh + 1) > data_end)
+            return NULL;
+        return uh;
+    }
+    return NULL;
+}
+
 SEC("xdp")
 int packet_filter(struct xdp_md *ctx)
 {
@@ -161,71 +267,7 @@ int packet_filter(struct xdp_md *ctx)
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
-    if (eth->h_proto == __constant_htons(ETH_P_IP)) {
-        struct iphdr *ip = (void *)(eth + 1);
-        if ((void *)(ip + 1) > data_end)
-            return XDP_PASS;
-        fctx.src_ip = bpf_ntohl(ip->saddr);
-        fctx.dst_ip = bpf_ntohl(ip->daddr);
-        is_ipv4 = 1;
-        /* Parse L4 header if TCP/UDP */
-        __u8 proto = ip->protocol;
-        __u8 ihl = ip->ihl; /* number of 32-bit words */
-        if (ihl < 5)
-            goto after_l4_parse; /* malformed, skip */
-        __u32 ip_hdr_len = (__u32)ihl * 4;
-        void *l4 = (void *)ip + ip_hdr_len;
-        if (l4 > data_end)
-            goto after_l4_parse;
-        if (proto == IPPROTO_TCP) {
-            struct tcphdr *th = l4;
-            if ((void *)(th + 1) > data_end)
-                goto after_l4_parse;
-            fctx.src_port = bpf_ntohs(th->source);
-            fctx.dst_port = bpf_ntohs(th->dest);
-            fctx.is_tcp = 1;
-        } else if (proto == IPPROTO_UDP) {
-            struct udphdr *uh = l4;
-            if ((void *)(uh + 1) > data_end)
-                goto after_l4_parse;
-            fctx.src_port = bpf_ntohs(uh->source);
-            fctx.dst_port = bpf_ntohs(uh->dest);
-            fctx.is_udp = 1;
-        }
-    } else if (eth->h_proto == __constant_htons(ETH_P_IPV6)) {
-        struct ipv6hdr *ip6 = (void *)(eth + 1);
-        if ((void *)(ip6 + 1) > data_end)
-            return XDP_PASS;
-        fctx.src_ip6 = ip6->saddr;
-        fctx.dst_ip6 = ip6->daddr;
-        is_ipv6 = 1;
-        /* For now, only handle simple (no extension headers) TCP/UDP */
-        __u8 nexthdr = ip6->nexthdr;
-        void *l4 = (void *)(ip6 + 1); /* IPv6 header fixed 40 bytes */
-        if (l4 > data_end)
-            goto after_l4_parse;
-        if (nexthdr == IPPROTO_TCP) {
-            struct tcphdr *th = l4;
-            if ((void *)(th + 1) > data_end)
-                goto after_l4_parse;
-            fctx.src_port = bpf_ntohs(th->source);
-            fctx.dst_port = bpf_ntohs(th->dest);
-            fctx.is_tcp = 1;
-        } else if (nexthdr == IPPROTO_UDP) {
-            struct udphdr *uh = l4;
-            if ((void *)(uh + 1) > data_end)
-                goto after_l4_parse;
-            fctx.src_port = bpf_ntohs(uh->source);
-            fctx.dst_port = bpf_ntohs(uh->dest);
-            fctx.is_udp = 1;
-        }
-    }
-    // print debug info
-    bpf_printk("Packet: is_ipv4=%d, is_ipv6=%d\n", is_ipv4, is_ipv6);
-    bpf_printk("Packet: src_ip=%x, dst_ip=%x\n", fctx.src_ip, fctx.dst_ip);
-    bpf_printk("L4: src_port=%u dst_port=%u is_tcp=%d is_udp=%d\n", fctx.src_port, fctx.dst_port, fctx.is_tcp, fctx.is_udp);
-after_l4_parse:
-    
+    /* Feature extraction is now deferred. bpfidsrules.c should call extraction helpers as needed. */
 
     /* Generated rules: first match returns */
 #if __has_include("bpfidsrules.c")
@@ -236,6 +278,10 @@ after_l4_parse:
 #endif
     (void)is_ipv4;
     (void)is_ipv6;
+    (void)fctx;
+    (void)data_end;
+    (void)data;
+    (void)eth;
     return XDP_PASS;
 }
 

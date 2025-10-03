@@ -3,6 +3,14 @@
         {
             "action": "XdpDrop",
             "expr": { "Match": { "SourceHost": "1.1.1.1" } }
+        },
+        {
+            "action": "XdpPass",
+            "expr": { "Match": { "SourceHost": "2.2.2.2" } }
+        },
+        {
+            "action": "XdpDrop",
+            "expr": { "Match" : { "DestinationPortTcp": [80,80]  } }
         }
     ]
 }

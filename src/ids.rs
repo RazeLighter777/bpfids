@@ -40,56 +40,130 @@ pub(crate) struct Config {
     pub rules: Vec<IdsRule>,
 }
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
-#[derive(Default)]
-pub(crate) struct MemoTable {
-    next: usize,
-    vars: HashMap<IdsMatch, String>,
-    inits: Vec<(String, String)>, // (var, code)
+pub enum IpHeader {
+    V4,
+    V6,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeclDependency {
+    EthHeader,
+    IpHeader,
+    Ipv6Header,
+    TcpHeader,
+    UdpHeader,
+    TcpSrcPort,
+    TcpDstPort,
+    UdpSrcPort,
+    UdpDstPort,
 }
 
-impl MemoTable {
-    fn var_for(&mut self, m: IdsMatch) -> String {
-        if let Some(v) = self.vars.get(&m) {
-            return v.clone();
-        }
-        let name = format!("mm{}", self.next);
-        self.next += 1;
-        let code = format!("const int {} = ({});", name, m.to_c());
-        self.vars.insert(m, name.clone());
-        self.inits.push((name.clone(), code));
-        name
+fn direct_dependencies(d: DeclDependency) -> Vec<DeclDependency> {
+    match d {
+        DeclDependency::EthHeader => vec![],
+        DeclDependency::IpHeader => vec![DeclDependency::EthHeader],
+        DeclDependency::Ipv6Header => vec![DeclDependency::EthHeader],
+        DeclDependency::TcpHeader => vec![DeclDependency::EthHeader],
+        DeclDependency::UdpHeader => vec![DeclDependency::EthHeader],
+        DeclDependency::TcpSrcPort => vec![DeclDependency::TcpHeader],
+        DeclDependency::TcpDstPort => vec![DeclDependency::TcpHeader],
+        DeclDependency::UdpSrcPort => vec![DeclDependency::UdpHeader],
+        DeclDependency::UdpDstPort => vec![DeclDependency::UdpHeader],
     }
-    pub fn emit_decls(&self) -> String {
-        self.inits
-            .iter()
-            .map(|(_, c)| c.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
+}
+
+// Topologically order dependencies (parents before dependents) using DFS
+fn ordered_dependency_chain(root: DeclDependency) -> Vec<DeclDependency> {
+    fn dfs(d: DeclDependency, out: &mut Vec<DeclDependency>, seen: &mut HashSet<DeclDependency>) {
+        if seen.contains(&d) { return; }
+        for dep in direct_dependencies(d).into_iter() { dfs(dep, out, seen); }
+        if !seen.contains(&d) { out.push(d); seen.insert(d); }
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    dfs(root, &mut out, &mut seen);
+    out
+}
+
+impl DeclDependency {
+    pub fn to_c_code(&self) -> &'static str {
+        match self {
+            DeclDependency::EthHeader => "if (fctx.eth == NULL) { fctx.eth = parse_ethhdr(data, data_end); }",
+            DeclDependency::IpHeader => "if (fctx.ip == NULL && fctx.eth != NULL) { fctx.ip = parse_iphdr(fctx.eth, data_end); if (fctx.ip) { fctx.src_ip = extract_src_ipv4(fctx.ip); fctx.dst_ip = extract_dst_ipv4(fctx.ip); } }",
+            DeclDependency::Ipv6Header => "if (fctx.ip6 == NULL && fctx.eth != NULL) { fctx.ip6 = parse_ipv6hdr(fctx.eth, data_end); if (fctx.ip6) { fctx.src_ip6 = extract_src_ipv6(fctx.ip6); fctx.dst_ip6 = extract_dst_ipv6(fctx.ip6); } }",
+            DeclDependency::TcpHeader => "if (fctx.tcp == NULL && fctx.eth != NULL) { fctx.tcp = parse_tcphdr(fctx.eth, data_end); }",
+            DeclDependency::UdpHeader => "if (fctx.udp == NULL && fctx.eth != NULL) { fctx.udp = parse_udphdr(fctx.eth, data_end); }",
+            DeclDependency::TcpSrcPort => "if (fctx.tcp != NULL) { fctx.tcp_src_port = extract_tcp_src_port(fctx.tcp); }",
+            DeclDependency::TcpDstPort => "if (fctx.tcp != NULL) { fctx.tcp_dst_port = extract_tcp_dst_port(fctx.tcp); }",
+            DeclDependency::UdpSrcPort => "if (fctx.udp != NULL) { fctx.udp_src_port = extract_udp_src_port(fctx.udp); }",
+            DeclDependency::UdpDstPort => "if (fctx.udp != NULL) { fctx.udp_dst_port = extract_udp_dst_port(fctx.udp); }",
+        }
+    }
+}
+impl DeclDependency {
+    pub fn to_c_include(&self) -> &'static str {
+        match self {
+            _ => unimplemented!(),
+        }
+    }
+    pub fn from_ids_match(m: &IdsMatch) -> Vec<DeclDependency> {
+        match m {
+            IdsMatch::SourceHost(IpAddr::V4(_)) => vec![DeclDependency::IpHeader],
+            IdsMatch::DestinationHost(IpAddr::V4(_)) => vec![DeclDependency::IpHeader],
+            IdsMatch::SourceNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
+            IdsMatch::DestinationNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
+            IdsMatch::SourceHost(IpAddr::V6(_)) => vec![DeclDependency::Ipv6Header],
+            IdsMatch::DestinationHost(IpAddr::V6(_)) => vec![DeclDependency::Ipv6Header],
+            IdsMatch::SourceNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
+            IdsMatch::DestinationNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
+            IdsMatch::SourcePortTcp(_, _) => vec![DeclDependency::TcpSrcPort],
+            IdsMatch::DestinationPortTcp(_, _) => vec![DeclDependency::TcpDstPort],
+            IdsMatch::SourcePortUdp(_, _) => vec![DeclDependency::UdpSrcPort],
+            IdsMatch::DestinationPortUdp(_, _) => vec![DeclDependency::UdpDstPort],
+        }
     }
 }
 
 impl IdsExpr {
-    // New variant that memoizes across calls via shared RefCell<MemoTable>
-    pub fn to_c_with_memo(&self, memo: &RefCell<MemoTable>) -> String {
+    // Generate C code with lazy dependency evaluation
+    pub fn to_c_lazy(&self, emitted_deps: &mut HashSet<DeclDependency>) -> (String, String) {
         match self {
-            IdsExpr::Match(m) => memo.borrow_mut().var_for(*m),
+            IdsExpr::Match(m) => {
+                let mut dep_code = String::new();
+                // Emit dependencies for this match if not already emitted
+                for base in DeclDependency::from_ids_match(m) {
+                    for dep in ordered_dependency_chain(base).into_iter() {
+                        if !emitted_deps.contains(&dep) {
+                            emitted_deps.insert(dep);
+                            dep_code.push_str(dep.to_c_code());
+                            dep_code.push_str("\n");
+                        }
+                    }
+                }
+                (dep_code, m.to_c())
+            }
             IdsExpr::And(l, r) => {
-                format!("({})&&({})", l.to_c_with_memo(memo), r.to_c_with_memo(memo))
+                let (ldep, lcond) = l.to_c_lazy(emitted_deps);
+                let (rdep, rcond) = r.to_c_lazy(emitted_deps);
+                (format!("{}{}", ldep, rdep), format!("({})&&({})", lcond, rcond))
             }
             IdsExpr::Or(l, r) => {
-                format!("({})||({})", l.to_c_with_memo(memo), r.to_c_with_memo(memo))
+                let (ldep, lcond) = l.to_c_lazy(emitted_deps);
+                let (rdep, rcond) = r.to_c_lazy(emitted_deps);
+                (format!("{}{}", ldep, rdep), format!("({})||({})", lcond, rcond))
             }
-            IdsExpr::Not(x) => format!("!({})", x.to_c_with_memo(memo)),
+            IdsExpr::Not(x) => {
+                let (dep, cond) = x.to_c_lazy(emitted_deps);
+                (dep, format!("!({})", cond))
+            }
         }
     }
 }
 
 impl IdsRule {
-    pub fn to_c_with_memo(&self, memo: &RefCell<MemoTable>, rule_num: u32) -> String {
-        let expr_c = self.expr.to_c_with_memo(memo);
+    pub fn to_c_lazy(&self, rule_num: u32, global_emitted_deps: &mut HashSet<DeclDependency>) -> String {
+        let (dep_code, expr_c) = self.expr.to_c_lazy(global_emitted_deps);
         let rule_description = format!("{:?}", self.expr).replace("\"", "\\\"");
         let action_c = match self.action {
             IdsAction::XdpDrop => format!("rule_hit({}); return XDP_DROP;", rule_num,),
@@ -103,27 +177,22 @@ impl IdsRule {
                 rule_description, rule_num
             ),
         };
-        format!("if ({}) {{ {} }}", expr_c, action_c)
+        if dep_code.trim().is_empty() {
+            format!("if ({}) {{ {} }}", expr_c, action_c)
+        } else {
+            format!("{}if ({}) {{ {} }}", dep_code, expr_c, action_c)
+        }
     }
 }
 
 impl Config {
     pub fn to_c_memoized(&self) -> String {
-        let memo = RefCell::new(MemoTable::default());
+        let mut global_emitted_deps = HashSet::new();
         let mut out = String::new();
-        // Build rule code first so memo table fills in deterministic encounter order
-        let mut rule_lines: Vec<String> = Vec::new();
+        
         for (i, r) in self.rules.iter().enumerate() {
-            rule_lines.push(r.to_c_with_memo(&memo, i as u32));
-        }
-        let decls = memo.borrow().emit_decls();
-        if !decls.is_empty() {
-            out.push_str("// Memoized match computations (once per packet)\n");
-            out.push_str(&decls);
-            out.push('\n');
-        }
-        for (r, line) in self.rules.iter().zip(rule_lines.iter()) {
-            out.push_str(&format!("// Rule: {:?}\n{}\n", r, line));
+            let rule_line = r.to_c_lazy(i as u32, &mut global_emitted_deps);
+            out.push_str(&format!("// Rule: {:?}\n{}\n", r, rule_line));
         }
         out
     }
@@ -170,26 +239,26 @@ impl IdsMatch {
             // L4 port matches (ranges inclusive)
             IdsMatch::SourcePortTcp(start, end_opt) => {
                 match end_opt {
-                    Some(end) => format!("(fctx.is_tcp && fctx.src_port >= {} && fctx.src_port <= {})", start, end),
-                    None => format!("(fctx.is_tcp && fctx.src_port == {})", start),
+                    Some(end) => format!("(fctx.tcp != NULL && fctx.tcp_src_port >= {} && fctx.tcp_src_port <= {})", start, end),
+                    None => format!("(fctx.tcp != NULL && fctx.tcp_src_port == {})", start),
                 }
             }
             IdsMatch::DestinationPortTcp(start, end_opt) => {
                 match end_opt {
-                    Some(end) => format!("(fctx.is_tcp && fctx.dst_port >= {} && fctx.dst_port <= {})", start, end),
-                    None => format!("(fctx.is_tcp && fctx.dst_port == {})", start),
+                    Some(end) => format!("(fctx.tcp != NULL && fctx.tcp_dst_port >= {} && fctx.tcp_dst_port <= {})", start, end),
+                    None => format!("(fctx.tcp != NULL && fctx.tcp_dst_port == {})", start),
                 }
             }
             IdsMatch::SourcePortUdp(start, end_opt) => {
                 match end_opt {
-                    Some(end) => format!("(fctx.is_udp && fctx.src_port >= {} && fctx.src_port <= {})", start, end),
-                    None => format!("(fctx.is_udp && fctx.src_port == {})", start),
+                    Some(end) => format!("(fctx.udp != NULL && fctx.udp_src_port >= {} && fctx.udp_src_port <= {})", start, end),
+                    None => format!("(fctx.udp != NULL && fctx.udp_src_port == {})", start),
                 }
             }
             IdsMatch::DestinationPortUdp(start, end_opt) => {
                 match end_opt {
-                    Some(end) => format!("(fctx.is_udp && fctx.dst_port >= {} && fctx.dst_port <= {})", start, end),
-                    None => format!("(fctx.is_udp && fctx.dst_port == {})", start),
+                    Some(end) => format!("(fctx.udp != NULL && fctx.udp_dst_port >= {} && fctx.udp_dst_port <= {})", start, end),
+                    None => format!("(fctx.udp != NULL && fctx.udp_dst_port == {})", start),
                 }
             }
             // IPv6 network matches need special handling
@@ -264,10 +333,10 @@ impl IdsMatch {
                     _ => false, // for ipv6 we always use memcmp
                 };
                 if use_eq_not_memcmp {
-                    format!("({} == {})", memcmp_arg1, memcmp_arg2)
+                    format!("{} == {}", memcmp_arg1, memcmp_arg2)
                 } else {
                     format!(
-                        "(__builtin_memcmp((const void*)&{}, (const void*)&{}, {}) == 0)",
+                        "__builtin_memcmp((const void*)&{}, (const void*)&{}, {}) == 0",
                         memcmp_arg1, memcmp_arg2, 16
                     )
                 }
