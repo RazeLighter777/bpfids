@@ -32,7 +32,7 @@ struct rule_counters {
     __u64 ts_60s;                /* Last time snap_60s updated */
     __u64 ts_3600s;              /* Last time snap_3600s updated */
     __u64 ts_86400s;             /* Last time snap_86400s updated */
-    __u32  initialized;           /* One-time timer init guard */
+    __u64  initialized;           /* One-time timer init guard */
 };
 
 struct {
@@ -72,6 +72,14 @@ struct filter_context
     __u16 tcp_dst_port;
 };
 
+struct ipv4_lpm_key {
+        __u32 prefixlen;
+        __u32 data;
+};
+struct ipv6_lpm_key {
+        __u32 prefixlen;
+        struct in6_addr data;
+};
 
 const static inline struct in6_addr  apply_ipv6_netmask(const struct in6_addr *ip, __u8 prefix) 
 {
@@ -253,6 +261,15 @@ static __always_inline struct udphdr *parse_udphdr(struct ethhdr* eth, void *dat
     }
     return NULL;
 }
+#if __has_include("bpfidsrules.c")
+#include "bpfidsrules.c"
+#else
+    /* Use bpf_printk (libbpf helper macro) instead of raw bpf_trace_printk with size 0 */
+const static int evaluate_rules(struct filter_context fctx, void *data, void* data_end) {
+    bpf_printk("No rules file found\n");
+    return XDP_PASS;
+}
+#endif
 
 SEC("xdp")
 int packet_filter(struct xdp_md *ctx)
@@ -260,29 +277,8 @@ int packet_filter(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     struct filter_context fctx = {0};
-    __u8 is_ipv4 = 0;
-    __u8 is_ipv6 = 0;
-
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return XDP_PASS;
-
     /* Feature extraction is now deferred. bpfidsrules.c should call extraction helpers as needed. */
-
-    /* Generated rules: first match returns */
-#if __has_include("bpfidsrules.c")
-#include "bpfidsrules.c"
-#else
-    /* Use bpf_printk (libbpf helper macro) instead of raw bpf_trace_printk with size 0 */
-    bpf_printk("No rules file found\n");
-#endif
-    (void)is_ipv4;
-    (void)is_ipv6;
-    (void)fctx;
-    (void)data_end;
-    (void)data;
-    (void)eth;
-    return XDP_PASS;
+    return evaluate_rules(fctx, data, data_end);
 }
 
 char _license[] SEC("license") = "GPL";

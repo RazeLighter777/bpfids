@@ -1,16 +1,19 @@
 {
-    "rules" : [
+    "interfaces": ["eth0"],
+    "ip_lists": [
         {
-            "action": "XdpDrop",
-            "expr": { "Match": { "SourceHost": "1.1.1.1" } }
-        },
+            "name": "blocked_ips",
+            "file" : "./banlist.txt"
+        }
+    ],
+    "rules": [
         {
-            "action": "XdpPass",
-            "expr": { "Match": { "SourceHost": "2.2.2.2" } }
-        },
-        {
-            "action": "XdpDrop",
-            "expr": { "Match" : { "DestinationPortTcp": [80,80]  } }
+            "action": "SilentlyDrop",
+            "expr": {
+                "Match": {
+                    "IpListSourceAddress": "blocked_ips"
+                }
+            }
         }
     ]
 }

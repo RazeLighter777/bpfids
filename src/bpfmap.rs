@@ -1,7 +1,6 @@
 use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use std::path::Path;
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
+use crate::bpfbindings::rule_counters;
 pub fn open_bpf_map<P: AsRef<Path>>(
     path: P,
     map_name: &str,

@@ -1,3 +1,5 @@
+BPFCFLAGS += -O2 -Wall -g -Werror -Wno-unused-function $(pkg-config --cflags libbpf) -target bpf -Wno-tautological-overlap-compare
+BPFCC = clang
 bpfids.o: bpfids.c bpfidsrules.c
 	$(BPFCC) $(BPFCFLAGS) -c bpfids.c
 bpfidsrules.c:

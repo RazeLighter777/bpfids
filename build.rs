@@ -15,6 +15,8 @@ fn main() {
         // bindings for.
         .header("wrapper.h")
         .allowlist_type("rule_counters")
+        .allowlist_type("ipv4_lpm_key")
+        .allowlist_type("ipv6_lpm_key")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

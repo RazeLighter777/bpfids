@@ -6,8 +6,13 @@
 use clap::{ Parser, Subcommand};
 use serde_json;
 use std::net::{IpAddr, Ipv4Addr};
+
+use crate::ids::Config;
 mod bpfmap;
 mod ids;
+mod iplist;
+mod bpfbindings;
+mod bpfloader;
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
     Apply,
@@ -23,6 +28,12 @@ enum Commands {
     FlushStats {
         map_path: Option<String>, // path to pinned bpf map
     },
+    ApplyListRules,
+    ShowLoadedLists,
+    Attach {
+        #[arg(short, long, default_value = "bpfids.o")]
+        bpf_path: String,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -35,6 +46,16 @@ struct Args {
     #[command(subcommand)]
     cmd: Commands,
 }
+
+fn apply_list_rules(c : &Config) {
+    for rule in &c.ip_lists {
+        println!("Applying IP list: {:?}", rule);
+        rule.apply().unwrap_or_else(|e| {
+            eprintln!("Failed to apply IP list {}: {}", rule.get_name(), e);
+        });
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config_content =
@@ -93,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::PrintTestRuleSerialization => {
             let test_rule = ids::IdsRule {
-                action: ids::IdsAction::Alert,
+                action: ids::IdsAction::AlertButStillPass,
                 expr: ids::IdsExpr::And(
                     Box::new(ids::IdsExpr::Match(ids::IdsMatch::DestinationHost(
                         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
@@ -142,6 +163,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &map_path.unwrap_or("/sys/fs/bpf/tc/globals/rule_counters_map".to_string()),
             )?;
             println!("Flushed stats by removing the map file.");
+        }
+        Commands::ApplyListRules => {
+            apply_list_rules(&config);
+        }
+        Commands::ShowLoadedLists => {
+            for rule in &config.ip_lists {
+                println!("IP List: {}", rule.get_name());
+                match rule.read_loaded_ips() {
+                    Ok(ips) => {
+                        for ip in ips {
+                            println!("  {}", ip);
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to read loaded IPs for list {}: {}", rule.get_name(), e),
+                }
+            }
+        }
+        Commands::Attach { bpf_path } => {
+            let link = bpfloader::load_bpf_program(&bpf_path, &config)?;
+            // loop until ctrl-c is pressed
+            println!("BPF program attached. Press Ctrl-C to detach and exit.");
+            ctrlc::set_handler(move || {
+                println!("Detaching BPF program and exiting...");
+                bpfloader::detach_bpf_program(&config, &bpf_path).unwrap_or_else(|e| {
+                    eprintln!("Failed to detach BPF program: {}", e);
+                });
+                std::process::exit(0);
+            })?;
+            loop { std::thread::park(); }
         }
     }
     Ok(())

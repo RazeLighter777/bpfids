@@ -1,24 +1,79 @@
+use clap::Id;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-#[derive(Serialize, Deserialize, Debug)]
-pub(crate) enum IdsAction {
-    XdpDrop,
-    XdpPass,
-    Alert,
-    Log,
+use crate::iplist;
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
+pub(crate) enum PortSpec {
+    Range(u16, u16), // start, end (inclusive)
+    List(Vec<u16>),  // list of specific ports
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
+impl PortSpec {
+    pub fn to_c_condition(&self, port_var: &str) -> String {
+        match self {
+            PortSpec::Range(start, end) => {
+                if start == end {
+                    format!("{} == {}", port_var, start)
+                } else {
+                    format!("{} >= {} && {} <= {}", port_var, start, port_var, end)
+                }
+            }
+            PortSpec::List(ports) => {
+                if ports.len() == 1 {
+                    format!("{} == {}", port_var, ports[0])
+                } else {
+                    let conditions: Vec<String> = ports.iter()
+                        .map(|port| format!("{} == {}", port_var, port))
+                        .collect();
+                    format!("({})", conditions.join(" || "))
+                }
+            }
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            PortSpec::Range(start, end) => {
+                if start > end {
+                    Err("Port range start must be less than or equal to end".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            PortSpec::List(ports) => {
+                //disallow duplicates
+                let mut seen = std::collections::HashSet::new();
+                for port in ports {
+                    if !seen.insert(port) {
+                        return Err(format!("Duplicate port {} in port list", port));
+                    }
+                }   
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) enum IdsAction {
+    SilentlyDrop,
+    Pass,
+    AlertButStillPass,
+    LogButStillPass,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Hash, Eq, PartialEq)]
 pub(crate) enum IdsMatch {
+    IpListSourceAddress(String),
+    IpListDestinationAddress(String),
     SourceHost(IpAddr),
     DestinationHost(IpAddr),
     SourceNet(IpAddr, u8),
     DestinationNet(IpAddr, u8),
-    // TCP/UDP port (single or inclusive range). If end is None => single port.
-    SourcePortTcp(u16, Option<u16>),
-    DestinationPortTcp(u16, Option<u16>),
-    SourcePortUdp(u16, Option<u16>),
-    DestinationPortUdp(u16, Option<u16>),
+    // TCP/UDP port specifications
+    SourcePortTcp(PortSpec),
+    DestinationPortTcp(PortSpec),
+    SourcePortUdp(PortSpec),
+    DestinationPortUdp(PortSpec),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -37,7 +92,12 @@ pub(crate) struct IdsRule {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Config {
+    #[serde(default)]
+    pub ip_lists: Vec<iplist::IpList>,
+    #[serde(default)]
     pub rules: Vec<IdsRule>,
+    #[serde(default)]
+    pub interfaces: Vec<String>,
 }
 
 use std::collections::HashSet;
@@ -102,10 +162,11 @@ impl DeclDependency {
             IdsMatch::SourceNet(IpAddr::V4(_), _) | IdsMatch::DestinationNet(IpAddr::V4(_), _) => vec![DeclDependency::IpHeader],
             IdsMatch::SourceHost(IpAddr::V6(_)) | IdsMatch::DestinationHost(IpAddr::V6(_)) |
             IdsMatch::SourceNet(IpAddr::V6(_), _) | IdsMatch::DestinationNet(IpAddr::V6(_), _) => vec![DeclDependency::Ipv6Header],
-            IdsMatch::SourcePortTcp(_, _) => vec![DeclDependency::TcpSrcPort],
-            IdsMatch::DestinationPortTcp(_, _) => vec![DeclDependency::TcpDstPort],
-            IdsMatch::SourcePortUdp(_, _) => vec![DeclDependency::UdpSrcPort],
-            IdsMatch::DestinationPortUdp(_, _) => vec![DeclDependency::UdpDstPort],
+            IdsMatch::SourcePortTcp(_) => vec![DeclDependency::TcpSrcPort],
+            IdsMatch::DestinationPortTcp(_) => vec![DeclDependency::TcpDstPort],
+            IdsMatch::SourcePortUdp(_) => vec![DeclDependency::UdpSrcPort],
+            IdsMatch::DestinationPortUdp(_) => vec![DeclDependency::UdpDstPort],
+            IdsMatch::IpListSourceAddress(_) | IdsMatch::IpListDestinationAddress(_) => vec![DeclDependency::IpHeader, DeclDependency::Ipv6Header],
         }
     }
 }
@@ -144,6 +205,21 @@ impl IdsExpr {
             }
         }
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            IdsExpr::Match(m) => m.validate(),
+            IdsExpr::And(l, r) | IdsExpr::Or(l, r) => {
+                l.validate()?;
+                r.validate()
+            },
+            //disallow double negation
+            IdsExpr::Not(inner) => match inner.as_ref() {
+                IdsExpr::Not(_) => Err("Double negation is not allowed".to_string()),
+                _ => inner.validate(),
+            },
+        }
+    }
 }
 
 impl IdsRule {
@@ -151,18 +227,22 @@ impl IdsRule {
         let (dep_code, expr_c) = self.expr.to_c_lazy(global_emitted_deps);
         let rule_description = format!("{:?}", self.expr).replace("\"", "\\\"");
         let action_c = match self.action {
-            IdsAction::XdpDrop => format!("rule_hit({}); return XDP_DROP;", rule_num),
-            IdsAction::XdpPass => format!("rule_hit({}); return XDP_PASS;", rule_num),
-            IdsAction::Alert => format!(
+            IdsAction::SilentlyDrop => format!("rule_hit({}); return XDP_DROP;", rule_num),
+            IdsAction::Pass => format!("rule_hit({}); return XDP_PASS;", rule_num),
+            IdsAction::AlertButStillPass => format!(
                 "bpf_printk(\"ALERT: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
                 rule_description, rule_num
             ),
-            IdsAction::Log => format!(
+            IdsAction::LogButStillPass => format!(
                 "bpf_printk(\"LOG: Rule matched - {}\\n\"); rule_hit({}); return XDP_PASS;",
                 rule_description, rule_num
             ),
         };
         format!("{}if ({}) {{ {} }}", dep_code, expr_c, action_c)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.expr.validate()
     }
 }
 
@@ -171,10 +251,17 @@ impl Config {
         let mut global_emitted_deps = HashSet::new();
         let mut out = String::new();
         
+        for ip_list in &self.ip_lists {
+            out.push_str(&ip_list.get_c_bpf_trie_repr());
+            out.push_str("\n");
+        }
+        out.push_str("const static int evaluate_rules(struct filter_context fctx, void *data, void* data_end) {\n");
         for (i, r) in self.rules.iter().enumerate() {
             let rule_line = r.to_c_lazy(i as u32, &mut global_emitted_deps);
             out.push_str(&format!("// Rule: {:?}\n{}\n", r, rule_line));
         }
+        out.push_str("return XDP_PASS;\n");
+        out.push_str("}\n");
         out
     }
 }
@@ -216,35 +303,40 @@ impl IdsMatch {
         )
     }
 
+    fn ip_list_lookup_condition(list_name: &str, ipv4_data_expr: &str, ipv6_data_expr: &str) -> String {
+        format!(
+            "({{ int found = 0; if (fctx.ip != NULL) {{ \
+                struct ipv4_lpm_key key = {{ .prefixlen = 32, .data = {ipv4_data} }}; \
+                void *val = bpf_map_lookup_elem(&{name}_ipv4, &key); \
+                if (val != NULL) {{ found = 1; }} \
+            }} else if (fctx.ip6 != NULL) {{ \
+                struct ipv6_lpm_key key = {{ .prefixlen = 128, .data = {ipv6_data} }}; \
+                void *val = bpf_map_lookup_elem(&{name}_ipv6, &key); \
+                if (val != NULL) {{ found = 1; }} \
+            }} found; }})",
+            name = list_name,
+            ipv4_data = ipv4_data_expr,
+            ipv6_data = ipv6_data_expr,
+        )
+    }
+
     pub fn to_c(&self) -> String {
         match self {
-            // L4 port matches (ranges inclusive)
-            IdsMatch::SourcePortTcp(start, end_opt) => {
-                let port_check = match end_opt {
-                    Some(end) => format!("fctx.tcp_src_port >= {} && fctx.tcp_src_port <= {}", start, end),
-                    None => format!("fctx.tcp_src_port == {}", start),
-                };
+            // L4 port matches using PortSpec
+            IdsMatch::SourcePortTcp(port_spec) => {
+                let port_check = port_spec.to_c_condition("fctx.tcp_src_port");
                 format!("(fctx.tcp != NULL && {})", port_check)
             }
-            IdsMatch::DestinationPortTcp(start, end_opt) => {
-                let port_check = match end_opt {
-                    Some(end) => format!("fctx.tcp_dst_port >= {} && fctx.tcp_dst_port <= {}", start, end),
-                    None => format!("fctx.tcp_dst_port == {}", start),
-                };
+            IdsMatch::DestinationPortTcp(port_spec) => {
+                let port_check = port_spec.to_c_condition("fctx.tcp_dst_port");
                 format!("(fctx.tcp != NULL && {})", port_check)
             }
-            IdsMatch::SourcePortUdp(start, end_opt) => {
-                let port_check = match end_opt {
-                    Some(end) => format!("fctx.udp_src_port >= {} && fctx.udp_src_port <= {}", start, end),
-                    None => format!("fctx.udp_src_port == {}", start),
-                };
+            IdsMatch::SourcePortUdp(port_spec) => {
+                let port_check = port_spec.to_c_condition("fctx.udp_src_port");
                 format!("(fctx.udp != NULL && {})", port_check)
             }
-            IdsMatch::DestinationPortUdp(start, end_opt) => {
-                let port_check = match end_opt {
-                    Some(end) => format!("fctx.udp_dst_port >= {} && fctx.udp_dst_port <= {}", start, end),
-                    None => format!("fctx.udp_dst_port == {}", start),
-                };
+            IdsMatch::DestinationPortUdp(port_spec) => {
+                let port_check = port_spec.to_c_condition("fctx.udp_dst_port");
                 format!("(fctx.udp != NULL && {})", port_check)
             }
             // IPv6 network matches need special handling
@@ -289,9 +381,34 @@ impl IdsMatch {
                         format!("__builtin_memcmp((const void*)&fctx.dst_ip6, (const void*)&{}, 16) == 0", 
                                Self::ipv6_to_in6_addr(ipv6))
                     }
+                    IdsMatch::IpListSourceAddress(list_name) => {
+                        Self::ip_list_lookup_condition(list_name.as_str(), "bpf_htonl(fctx.src_ip)", "fctx.src_ip6")
+                    }
+                    IdsMatch::IpListDestinationAddress(list_name) => {
+                        Self::ip_list_lookup_condition(list_name.as_str(), "bpf_htonl(fctx.dst_ip)", "fctx.dst_ip6")
+                    }
                     _ => unreachable!(),
                 }
             }
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            IdsMatch::SourceNet(_, prefix) | IdsMatch::DestinationNet(_, prefix) => {
+                match self {
+                    IdsMatch::SourceNet(IpAddr::V4(_), p) | IdsMatch::DestinationNet(IpAddr::V4(_), p) 
+                        if *p > 32 => Err("IPv4 prefix cannot exceed 32".to_string()),
+                    IdsMatch::SourceNet(IpAddr::V6(_), p) | IdsMatch::DestinationNet(IpAddr::V6(_), p) 
+                        if *p > 128 => Err("IPv6 prefix cannot exceed 128".to_string()),
+                    _ => Ok(())
+                }
+            }
+            IdsMatch::SourcePortTcp(ps) | IdsMatch::DestinationPortTcp(ps) |
+            IdsMatch::SourcePortUdp(ps) | IdsMatch::DestinationPortUdp(ps) => {
+                ps.validate()
+            }
+            _ => Ok(())
         }
     }
 }
